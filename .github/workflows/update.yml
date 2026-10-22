@@ -1,0 +1,116 @@
+# Keeps https://<owner>.github.io pointing at the current Mimet quick tunnel.
+# The address comes from the site's public endpoint; a redeploy happens only
+# when it changed. No secrets or tokens: only the built-in GITHUB_TOKEN.
+name: Tunel adresini guncelle
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Adresi kontrol et
+        id: check
+        env:
+          SITE: https://${{ github.repository_owner }}.github.io
+        run: |
+          set -uo pipefail
+          url=$(curl -fsS --max-time 20 https://mimet.uk/api/public/tunnel-url \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("url") or "")' || true)
+          if ! [[ "$url" =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]]; then
+            echo "Adres alinamadi ('$url'); sayfa oldugu gibi kaliyor."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          live=$(curl -fsS --max-time 20 "$SITE/tunnel.txt?t=$(date +%s)" | tr -d '[:space:]' || true)
+          if [ "$live" = "$url" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Degismedi: $url"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$url" _site <<'PY'
+          import html
+          import os
+          import re
+          import sys
+
+          url = sys.argv[1].strip().rstrip("/")
+          out = sys.argv[2]
+          if not re.fullmatch(r"https://[a-z0-9-]+\.trycloudflare\.com", url):
+              sys.exit(f"gecersiz adres: {url!r}")
+
+          safe = html.escape(url, quote=True)
+          page = f"""<!doctype html>
+          <html lang="tr">
+          <head>
+          <meta charset="utf-8">
+          <meta name="robots" content="noindex, nofollow">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Mimet</title>
+          <meta http-equiv="refresh" content="1;url={safe}/">
+          <script>
+            // Keep the path, so /portfolio here opens /portfolio on the tunnel.
+            location.replace("{safe}" + location.pathname + location.search + location.hash);
+          </script>
+          <style>
+            body {{ background:#111; color:#ddd; font:15px system-ui, sans-serif; display:grid; place-items:center; min-height:100vh; margin:0; }}
+            a {{ color:#d4a853; }}
+          </style>
+          </head>
+          <body>
+          <p>Mimet'e yönlendiriliyor… Açılmazsa: <a href="{safe}/">{safe}</a></p>
+          </body>
+          </html>
+          """
+          os.makedirs(out, exist_ok=True)
+          for name in ("index.html", "404.html"):
+              with open(os.path.join(out, name), "w", encoding="utf-8") as handle:
+                  handle.write(page)
+          with open(os.path.join(out, "tunnel.txt"), "w", encoding="utf-8") as handle:
+              handle.write(url + "\n")
+          open(os.path.join(out, ".nojekyll"), "w").close()
+          print("yazildi:", url)
+          PY
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Sayfayi hazirla
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Yayinla
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/deploy-pages@v4
+
+      # GitHub pauses scheduled workflows after 60 days without repo activity.
+      - name: Ayda bir canli tut
+        if: github.event_name == 'schedule'
+        run: |
+          month=$(date -u +%Y-%m)
+          if [ "$(cat .keepalive 2>/dev/null)" != "$month" ]; then
+            echo "$month" > .keepalive
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .keepalive
+            git commit -m "keepalive $month"
+            git push
+          fi
