@@ -33,10 +33,23 @@ jobs:
           SITE: https://${{ github.repository_owner }}.github.io
         run: |
           set -uo pipefail
-          url=$(curl -fsS --max-time 20 https://mimet.uk/api/public/tunnel-url \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("url") or "")' || true)
+          url=""
+          for attempt in 1 2 3; do
+            code=$(curl -sS --max-time 20 -o body.txt -w '%{http_code}' \
+              -A "Mozilla/5.0 (X11; Linux x86_64) MimetTunnelSync/1.0" \
+              -H "Accept: application/json" \
+              https://mimet.uk/api/public/tunnel-url || true)
+            echo "Deneme $attempt: HTTP $code"
+            url=$(python3 -c 'import json,sys
+          try: print(json.load(open("body.txt")).get("url") or "")
+          except Exception: print("")' 2>/dev/null || true)
+            [[ "$url" =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]] && break
+            echo "Yanit (ilk 300 karakter):"; head -c 300 body.txt 2>/dev/null; echo
+            sleep 10
+          done
           if ! [[ "$url" =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]]; then
-            echo "Adres alinamadi ('$url'); sayfa oldugu gibi kaliyor."
+            snippet=$(head -c 160 body.txt 2>/dev/null | tr -d '\r\n' | tr -c '[:alnum:][:space:].,:/_-' ' ')
+            echo "::warning::Tunel adresi alinamadi (HTTP $code). Yanit: $snippet"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -46,6 +59,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "Yeni adres: $url"
           python3 - "$url" _site <<'PY'
           import html
           import os
