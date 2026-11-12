@@ -50,7 +50,15 @@ jobs:
           if ! [[ "$url" =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]]; then
             snippet=$(head -c 160 body.txt 2>/dev/null | tr -d '\r\n' | tr -c '[:alnum:][:space:].,:/_-' ' ')
             echo "::warning::Tunel adresi alinamadi (HTTP $code). Yanit: $snippet"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Elle/push ile calistiginda depodaki son yonlendirme sayfasiyla yine yayinla
+            # (boylece /asistan guncellemeleri tunel API'sine bagli kalmaz).
+            mkdir -p _site
+            cp index.html 404.html tunnel.txt .nojekyll _site/
+            echo "changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           live=$(curl -fsS --max-time 20 "$SITE/tunnel.txt?t=$(date +%s)" | tr -d '[:space:]' || true)
@@ -104,6 +112,10 @@ jobs:
           print("yazildi:", url)
           PY
           echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Asistan'i ekle
+        if: steps.check.outputs.changed == 'true'
+        run: cp -r asistan _site/asistan
 
       - name: Sayfayi hazirla
         if: steps.check.outputs.changed == 'true'
